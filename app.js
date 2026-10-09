@@ -24,7 +24,7 @@
   let S = Object.assign(clone(DEF_SETTINGS), ls.get('settings', {}));
   let clients = ls.get('clients', DEF_CLIENTS);
   let invoices = ls.get('invoices', []);
-  const saveS = () => ls.set('settings', S), saveC = () => ls.set('clients', clients), saveI = () => ls.set('invoices', invoices);
+  const saveS = () => { try { ls.set('settings', S); } catch (e) { alert('Could not save: ' + e.message); } }, saveC = () => ls.set('clients', clients), saveI = () => ls.set('invoices', invoices);
   if (!localStorage.getItem('adl.clients')) saveC();
 
   const idb = new Promise((res, rej) => { const r = indexedDB.open('adl-invoice', 1); r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
@@ -52,8 +52,8 @@
     const a = Object.assign({}, attrs); delete a.textarea; const opts = a.options; delete a.options;
     const el = h(tag, a, opts ? opts.map(o => h('option', { value: o[0] }, o[1])) : null);
     el.value = obj[key] == null ? '' : obj[key];
-    el.addEventListener('input', () => { obj[key] = (a.type === 'number') ? (el.value === '' ? '' : Number(el.value)) : el.value; after && after(el); });
-    if (tag === 'select') el.addEventListener('change', () => { obj[key] = el.value; after && after(el); });
+    const upd = () => { obj[key] = (a.type === 'number') ? (el.value === '' ? '' : Number(el.value)) : el.value; after && after(el); };
+    el.addEventListener('input', upd); el.addEventListener('change', upd); el.addEventListener('blur', upd);
     return el;
   }
   const incNum = n => { const m = String(n).match(/^(.*?)(\d+)$/); return m ? m[1] + String(Number(m[2]) + 1).padStart(m[2].length, '0') : n + '-1'; };
@@ -338,7 +338,8 @@
       field('Supplier line', bind(s, 'supplierLine', {}, ch))));
     main.append(h('div', { class: 'card' }, h('h2', null, 'Bank details'),
       field('Payee', bind(s, 'payee', {}, ch)), field('Bank', bind(s, 'bank', {}, ch)),
-      h('div', { class: 'row' }, field('BSB', bind(s, 'bsb', { inputmode: 'numeric' }, ch)), field('Account', bind(s, 'account', { inputmode: 'numeric' }, ch)))));
+      h('div', { class: 'row' }, field('BSB', bind(s, 'bsb', { inputmode: 'numeric' }, ch)), field('Account', bind(s, 'account', { inputmode: 'numeric' }, ch))),
+      h('button', { class: 'btn', onclick: () => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); main.querySelectorAll('input,textarea,select').forEach(el => el.dispatchEvent(new Event('change'))); try { saveS(); toast('Settings saved ✓'); } catch (e) { alert('Could not save settings: ' + e.message + '. If you are in Private Browsing, switch it off.'); } } }, 'Save settings')));
     const imp = h('input', { type: 'file', accept: 'application/json,.json', style: 'display:none', onchange: async e => {
       const f = e.target.files[0]; e.target.value = ''; if (!f) return;
       try {
