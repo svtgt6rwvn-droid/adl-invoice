@@ -16,7 +16,21 @@
     expenseNote: 'Added at the receipt total. GST is already on the parking tax invoices. No extra GST added.',
     shareText: 'Hi {name}, please find attached tax invoice {number} for {total}. Thanks, Adrian'
   };
-  const DEF_CLIENTS = [{ id: 'inlink', name: 'Inlink Constructions', attention: 'Mark Hanham', address: '2 Satellite Street\nCoorparoo QLD 4150', abn: '25 144 973 208', email: '' }];
+  const DEF_CLIENTS = [
+    { id: 'inlink', name: 'Inlink Constructions', attention: 'Mark Hanham', address: '2 Satellite Street\nCoorparoo QLD 4150', abn: '25 144 973 208', phone: '', email: '', pricing: { type: 'hourly', rate: 65 } },
+    { id: 'timmers', name: 'Timmers Construction Pty Ltd', attention: '', address: 'Unit 4/11 Forge Close\nSumner QLD 4074', abn: '74 117 282 854', phone: '1300 760 115', email: 'admin@timmersconstruction.com.au', pricing: { type: 'day', half: 450, full: 900 } },
+    { id: 'jdarr', name: 'JDARR Projects Pty Ltd', attention: '', address: '', abn: '35 679 516 262', phone: '', email: '', pricing: { type: 'hourly', rate: 95 } }
+  ];
+  const SEED_VERSION = 2;
+  const TASKS = [
+    ['Set-out & framing', ['Setting out / marking out', 'Top & bottom track install', 'Steel stud wall framing', 'Timber wall framing', 'Bulkhead framing', 'Suspended ceiling framing (furring channel / top cross rail)', 'Direct-fix ceiling framing', 'Deflection head install', 'Nogging / backing install', 'Door frame install', 'Opening / window reveal framing']],
+    ['Ceilings', ['Exposed grid ceiling install', 'Ceiling tile install', 'Ceiling sheeting', 'Bulkhead sheeting', 'Access panel install']],
+    ['Sheeting & linings', ['Plasterboard wall sheeting', 'Fire-rated wall sheeting', 'Shaft wall install', 'Acoustic wall / insulation install', 'Wet area sheeting (Villaboard / FC)', 'Curved / feature wall']],
+    ['Finishing', ['Corner beads / stopping beads', 'Shadowline / set trim', 'Cornice install', 'Setting – base coat', 'Setting – second coat', 'Setting – top coat', 'Sanding', 'Patching / repairs']],
+    ['Fire & compliance', ['Fire stopping / penetration sealing', 'Fire-rated bulkhead / ceiling']],
+    ['Site & other', ['Scaffold / EWP setup', 'Materials handling / loading', 'Demolition / strip-out', 'Site clean-up', 'Rework / defects', 'Site induction / toolbox', 'Travel', 'Standby / waiting time']]
+  ];
+  const ALL_TASKS = TASKS.flatMap(g => g[1]);
   const ls = {
     get(k, d) { try { const v = localStorage.getItem('adl.' + k); return v ? JSON.parse(v) : clone(d); } catch (e) { return clone(d); } },
     set(k, v) { localStorage.setItem('adl.' + k, JSON.stringify(v)); }
@@ -25,7 +39,20 @@
   let clients = ls.get('clients', DEF_CLIENTS);
   let invoices = ls.get('invoices', []);
   const saveS = () => { try { ls.set('settings', S); } catch (e) { alert('Could not save: ' + e.message); } }, saveC = () => ls.set('clients', clients), saveI = () => ls.set('invoices', invoices);
-  if (!localStorage.getItem('adl.clients')) saveC();
+  if (!localStorage.getItem('adl.clients')) { saveC(); localStorage.setItem('adl.seedVersion', String(SEED_VERSION)); }
+  // Migration: add newer default clients (by id) and pricing to old entries, without overwriting user edits.
+  (function migrate() {
+    if (Number(localStorage.getItem('adl.seedVersion') || 1) >= SEED_VERSION) return;
+    const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    DEF_CLIENTS.forEach(dc => {
+      const ex = clients.find(c => c.id === dc.id) || clients.find(c => norm(c.name) === norm(dc.name));
+      if (!ex) clients.push(clone(dc)); else if (!ex.pricing) ex.pricing = clone(dc.pricing);
+    });
+    clients.forEach(c => { if (!c.pricing) c.pricing = { type: 'hourly', rate: Number(S.rate) || 65 }; });
+    saveC(); localStorage.setItem('adl.seedVersion', String(SEED_VERSION));
+  })();
+  const pricingFor = c => clone((c && c.pricing) || { type: 'hourly', rate: Number(S.rate) || 65 });
+  const pricingLabel = p => p && p.type === 'day' ? `Day rate: half $${p.half || 0}, full $${p.full || 0} ex GST` : `$${(p && p.rate) || 0}/hr ex GST`;
 
   const idb = new Promise((res, rej) => { const r = indexedDB.open('adl-invoice', 1); r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
   const fileOp = (mode, fn) => idb.then(db => new Promise((res, rej) => { const tx = db.transaction('files', mode); const st = tx.objectStore('files'); const r = fn(st); tx.oncomplete = () => res(r && r.result); tx.onerror = () => rej(tx.error); }));
@@ -85,7 +112,7 @@
     main.append(h('img', { class: 'logo', src: 'icons/logo.jpg', alt: 'ADL Plaster' }));
     main.append(h('div', { class: 'sum' },
       h('div', null, h('span', null, 'Unpaid'), h('b', null, F.money(unpaid.reduce((s, i) => s + invTotal(i), 0))), h('span', null, unpaid.length + ' invoice' + (unpaid.length === 1 ? '' : 's'))),
-      h('div', null, h('span', null, 'Next number'), h('b', null, S.nextNumber), h('span', null, '$' + S.rate + '/hr + GST'))));
+      h('div', null, h('span', null, 'Next number'), h('b', null, S.nextNumber), h('span', null, clients.length + ' clients'))));
     const bw = bankWarn(); if (bw) main.append(bw);
     main.append(h('button', { class: 'btn red', onclick: newInvoice }, '＋  New invoice'));
     main.append(h('div', { style: 'height:14px' }));
@@ -104,10 +131,10 @@
     if (dirty && cur && !cur._saved && !confirm('Discard this unsaved invoice?')) return;
     const c = clients[0] || {};
     cur = { id: uid(), number: S.nextNumber, date: today(), due: S.due, clientId: c.id || '', client: clone(c), jobSite: '', jobLines: '', period: '',
-      rate: S.rate, gstRate: S.gstRate, days: [], expenses: [], expenseNote: '', flagNote: '', labourNote: '', atts: [], status: 'unpaid', created: Date.now(), _saved: false };
+      rate: pricingFor(c).rate || S.rate, pricing: pricingFor(c), gstRate: S.gstRate, days: [], expenses: [], expenseNote: '', flagNote: '', labourNote: '', atts: [], status: 'unpaid', created: Date.now(), _saved: false };
     dirty = false; go('edit', null, { force: true });
   }
-  function openInvoice(id) { const inv = invoices.find(i => i.id === id); if (!inv) return; cur = clone(inv); cur._saved = true; dirty = false; go('edit'); }
+  function openInvoice(id) { const inv = invoices.find(i => i.id === id); if (!inv) return; cur = clone(inv); if (!cur.pricing) cur.pricing = { type: 'hourly', rate: Number(cur.rate) || 0 }; cur._saved = true; dirty = false; go('edit'); }
   function persist(silent) {
     if (!cur) return;
     if (!cur.number) { alert('Please enter an invoice number.'); return false; }
@@ -126,10 +153,12 @@
   function refreshTotals() {
     if (!totalsEl || !cur) return; const T = totals(cur);
     totalsEl.innerHTML = '';
-    totalsEl.append(h('div', { class: 'l' }, h('span', null, `Labour ${F.hrs(T.hours)} hrs ex GST`), h('span', null, F.money(T.labour))),
+    const pd = (cur.days || []).reduce((n, d, i) => n + T.lines[i].t * (d.dayType === 'half' ? 0.5 : 1), 0);
+    const labLbl = T.P.type === 'day' ? `Labour ${F.hrs(pd)} person-days ex GST` : `Labour ${F.hrs(T.manHours)} ${T.multi ? 'person-hours' : 'hrs'} ex GST`;
+    totalsEl.append(...[h('div', { class: 'l' }, h('span', null, labLbl), h('span', null, F.money(T.labour))),
       h('div', { class: 'l' }, h('span', null, `GST ${T.gstPct}%`), h('span', null, F.money(T.gst))),
       T.exp ? h('div', { class: 'l' }, h('span', null, 'Parking (no extra GST)'), h('span', null, F.money(T.exp))) : null,
-      h('div', { class: 'l big' }, h('span', null, 'Balance due'), h('span', null, F.money(T.total))));
+      h('div', { class: 'l big' }, h('span', null, 'Balance due'), h('span', null, F.money(T.total)))].filter(Boolean));
   }
 
   views.edit = main => {
@@ -141,40 +170,58 @@
       main.append(h('div', { class: 'card' }, seg, inv.status === 'paid' && inv.paidDate ? h('div', { class: 'muted', style: 'margin-top:6px;text-align:center' }, 'Paid ' + F.dFull(inv.paidDate)) : null));
     }
     // client & job
-    const cSel = h('select', { onchange: e => { if (e.target.value === '__new') { go('client', { returnToEdit: inv }, { force: true }); return; } const c = clients.find(x => x.id === e.target.value); inv.clientId = c.id; inv.client = clone(c); changed(); } },
+    const cSel = h('select', { onchange: e => { if (e.target.value === '__new') { go('client', { returnToEdit: inv }, { force: true }); return; } const c = clients.find(x => x.id === e.target.value); inv.clientId = c.id; inv.client = clone(c); inv.pricing = pricingFor(c); if (inv.pricing.type === 'hourly') inv.rate = inv.pricing.rate; renderPricing(); renderDays(); changed(); toast(c.name.split(' ')[0] + ': ' + pricingLabel(inv.pricing)); } },
       clients.map(c => h('option', { value: c.id }, c.name)), h('option', { value: '__new' }, '＋ Add new client…'));
     cSel.value = inv.clientId;
     main.append(h('div', { class: 'card' }, h('h2', null, 'Client & job'), field('Bill to', cSel),
       field('Job / site', bind(inv, 'jobSite', { placeholder: 'e.g. 12 Smith Street fit-out' }, changed)),
       field('Job details (one per line)', bind(inv, 'jobLines', { textarea: true, placeholder: 'Builder or project name\nScope of work\nSigned day sheet attached' }, changed))));
+    // pricing (from client, editable per invoice)
+    if (!inv.pricing) inv.pricing = { type: 'hourly', rate: Number(inv.rate) || 0 };
+    const pricingBox = h('div');
+    function renderPricing() {
+      const P = inv.pricing; pricingBox.innerHTML = '';
+      const typeSel = bind(P, 'type', { options: [['hourly', 'Hourly rate'], ['day', 'Day rate']] }, () => { if (P.type === 'day') { P.half = P.half || 450; P.full = P.full || 900; } else { P.rate = P.rate || Number(S.rate) || 65; inv.rate = P.rate; } renderPricing(); renderDays(); changed(); });
+      pricingBox.append(h('div', { class: 'row' }, field('Pricing (per tradesperson)', typeSel),
+        P.type === 'day' ? null : field('$/hr ex GST', bind(P, 'rate', { type: 'number', inputmode: 'decimal', step: '0.01' }, () => { inv.rate = P.rate; changed(); }))),
+        P.type === 'day' ? h('div', { class: 'row' }, field('Half day $ ex GST', bind(P, 'half', { type: 'number', inputmode: 'decimal', step: '0.01' }, changed)), field('Full day $ ex GST', bind(P, 'full', { type: 'number', inputmode: 'decimal', step: '0.01' }, changed))) : null);
+    }
     // invoice details
     main.append(h('div', { class: 'card' }, h('h2', null, 'Invoice'),
       h('div', { class: 'row' }, field('Number', bind(inv, 'number', { autocapitalize: 'characters' }, changed)), field('Date', bind(inv, 'date', { type: 'date' }, changed))),
-      h('div', { class: 'row' }, field('Due', bind(inv, 'due', {}, changed)), field('Rate $/hr + GST', bind(inv, 'rate', { type: 'number', inputmode: 'decimal', step: '0.01' }, changed))),
-      field('Period (blank = from work days)', bind(inv, 'period', { placeholder: 'auto' }, changed))));
+      h('div', { class: 'row' }, field('Due', bind(inv, 'due', {}, changed)), field('Period', bind(inv, 'period', { placeholder: 'auto' }, changed))),
+      pricingBox));
+    renderPricing();
     // work days
     const daysBox = h('div');
-    const renderDays = () => {
+    function renderDays() {
       daysBox.innerHTML = '';
+      const isDay = inv.pricing && inv.pricing.type === 'day';
       inv.days.forEach((d, i) => {
+        if (!d.trades) d.trades = 1;
+        if (isDay && !d.dayType) d.dayType = 'full';
         const hrs = bind(d, 'hours', { type: 'number', inputmode: 'decimal', step: '0.25' }, changed);
         const recalc = () => { const v = hoursFromTimes(d.start, d.finish, d.brk); if (v != null) { d.hours = v; hrs.value = v; } changed(); };
-        daysBox.append(h('div', { class: 'item' },
-          h('div', { class: 'hd' }, d.date ? F.dShort(d.date) : 'Day ' + (i + 1)),
+        const trades = field('Tradespeople', bind(d, 'trades', { type: 'number', inputmode: 'numeric', min: '1', step: '1' }, changed));
+        const desc = bind(d, 'desc', { textarea: true, rows: '2', placeholder: 'Pick tasks or type', class: 'desc-in' }, changed);
+        const hd = h('div', { class: 'hd' }, d.date ? F.dShort(d.date) : 'Day ' + (i + 1));
+        daysBox.append(h('div', { class: 'item day-item' },
+          hd,
           h('button', { class: 'x', 'aria-label': 'Remove day', onclick: () => { inv.days.splice(i, 1); renderDays(); changed(); } }, '×'),
-          field('Date', bind(d, 'date', { type: 'date' }, changed)),
-          h('div', { class: 'row' }, field('Start', bind(d, 'start', { type: 'time' }, recalc)), field('Finish', bind(d, 'finish', { type: 'time' }, recalc))),
-          h('div', { class: 'row' }, field('Unpaid break (min)', bind(d, 'brk', { type: 'number', inputmode: 'numeric', placeholder: '0' }, recalc)), field('Hours', hrs)),
-          field('Description', bind(d, 'desc', { placeholder: 'e.g. Framing' }, changed)),
+          field('Date', bind(d, 'date', { type: 'date' }, () => { hd.textContent = d.date ? F.dShort(d.date) : 'Day ' + (i + 1); changed(); })),
+          isDay ? h('div', { class: 'row' }, field('Day', bind(d, 'dayType', { options: [['full', 'Full day'], ['half', 'Half day']] }, changed)), trades) : null,
+          isDay ? null : h('div', { class: 'row' }, field('Start', bind(d, 'start', { type: 'time' }, recalc)), field('Finish', bind(d, 'finish', { type: 'time' }, recalc))),
+          isDay ? null : h('div', { class: 'row three' }, field('Break (min)', bind(d, 'brk', { type: 'number', inputmode: 'numeric', placeholder: '0' }, recalc)), field('Hours', hrs), trades),
+          h('div', null, h('label', null, 'Description'), h('div', { class: 'desc-row' }, desc, h('button', { class: 'btn small task-btn', type: 'button', onclick: () => openTasks(d, desc) }, '☰ Tasks'))),
           field('Job', bind(d, 'job', { placeholder: 'e.g. Smith St' }, changed))));
       });
-    };
+    }
     renderDays();
     main.append(h('div', { class: 'card' }, h('h2', null, 'Work days'), daysBox,
       h('button', { class: 'btn ghost', onclick: () => {
         const last = inv.days[inv.days.length - 1];
-        const d = last ? { date: last.date ? addDays(last.date, 1) : today(), start: last.start, finish: last.finish, brk: last.brk || '', hours: last.hours, desc: last.desc, job: last.job }
-          : { date: today(), start: S.defStart, finish: S.defFinish, brk: '', hours: hoursFromTimes(S.defStart, S.defFinish) || 8, desc: '', job: inv.jobSite || '' };
+        const d = last ? { date: last.date ? addDays(last.date, 1) : today(), start: last.start, finish: last.finish, brk: last.brk || '', hours: last.hours, desc: last.desc, job: last.job, trades: last.trades || 1, dayType: last.dayType || 'full' }
+          : { date: today(), start: S.defStart, finish: S.defFinish, brk: '', hours: hoursFromTimes(S.defStart, S.defFinish) || 8, desc: '', job: inv.jobSite || '', trades: 1, dayType: 'full' };
         inv.days.push(d); renderDays(); changed();
       } }, '＋ Add work day')));
     // expenses
@@ -240,6 +287,23 @@
       field('Parking note', bind(inv, 'expenseNote', { textarea: true, placeholder: S.expenseNote }, changed)),
       field('GST %', bind(inv, 'gstRate', { type: 'number', inputmode: 'decimal' }, changed))));
   };
+  /* task picker (bottom sheet, multi-select) */
+  function openTasks(d, input) {
+    const parts = String(d.desc || '').split(',').map(t => t.trim()).filter(Boolean);
+    const chosen = new Set(parts.filter(t => ALL_TASKS.includes(t)));
+    const other = parts.filter(t => !ALL_TASKS.includes(t)).join(', ');
+    const otherIn = h('input', { placeholder: 'Other… type anything', value: other });
+    const close = () => sheet.remove();
+    const sheet = h('div', { class: 'sheet-bg', onclick: e => { if (e.target === sheet) close(); } },
+      h('div', { class: 'sheet' },
+        h('div', { class: 'sheet-hd' }, h('button', { class: 'linkbtn', onclick: () => { chosen.clear(); sheet.querySelectorAll('.chip').forEach(c => c.classList.remove('on')); } }, 'Clear'), h('b', null, 'Tasks'),
+          h('button', { class: 'linkbtn strong', onclick: () => { const v = [...ALL_TASKS.filter(t => chosen.has(t)), ...otherIn.value.split(',').map(t => t.trim()).filter(Boolean)].join(', '); d.desc = v; input.value = v; close(); changed(); } }, 'Done')),
+        h('div', { class: 'sheet-body' },
+          TASKS.map(([grp, items]) => h('div', null, h('div', { class: 'grp' }, grp), h('div', { class: 'chips' },
+            items.map(t => h('button', { class: 'chip' + (chosen.has(t) ? ' on' : ''), type: 'button', onclick: e => { if (chosen.has(t)) chosen.delete(t); else chosen.add(t); e.currentTarget.classList.toggle('on'); } }, t))))),
+          h('div', { class: 'grp' }, 'Other…'), otherIn)));
+    document.body.append(sheet);
+  }
   function duplicate(src) {
     cur = clone(src); Object.assign(cur, { id: uid(), number: S.nextNumber, date: today(), status: 'unpaid', paidDate: '', atts: [], period: '', created: Date.now(), _saved: false });
     dirty = true; go('edit', null, { force: true }); toast('Copy made — update the days, then save');
@@ -298,13 +362,21 @@
   views.clients = main => {
     header('Clients');
     clients.forEach(c => main.append(h('div', { class: 'inv', onclick: () => go('client', { id: c.id }) },
-      h('div', { class: 'm' }, h('div', { class: 'n' }, c.name), h('div', { class: 'c' }, [c.attention && 'Attn: ' + c.attention, (c.address || '').split('\n').pop()].filter(Boolean).join(' · '))), h('div', { class: 'muted' }, '›'))));
+      h('div', { class: 'm' }, h('div', { class: 'n' }, c.name), h('div', { class: 'c' }, [pricingLabel(c.pricing), (c.address || '').split('\n').pop()].filter(Boolean).join(' · '))), h('div', { class: 'muted' }, '›'))));
     main.append(h('button', { class: 'btn', onclick: () => go('client', {}) }, '＋ Add client'));
   };
   views.client = (main, arg) => {
     const ret = arg && arg.returnToEdit ? arg.returnToEdit : null;
     const existing = arg && arg.id ? clients.find(c => c.id === arg.id) : null;
-    const c = existing ? clone(existing) : { id: uid(), name: '', attention: '', address: '', abn: '', email: '' };
+    const c = existing ? clone(existing) : { id: uid(), name: '', attention: '', address: '', abn: '', phone: '', email: '' };
+    if (!c.pricing) c.pricing = { type: 'hourly', rate: Number(S.rate) || 65 };
+    const pBox = h('div');
+    const renderP = () => { const P = c.pricing; pBox.innerHTML = '';
+      pBox.append(field('Pricing type', bind(P, 'type', { options: [['hourly', 'Hourly rate'], ['day', 'Day rate']] }, () => { if (P.type === 'day') { P.half = P.half || 450; P.full = P.full || 900; } else P.rate = P.rate || Number(S.rate) || 65; renderP(); })),
+        P.type === 'day' ? h('div', { class: 'row' }, field('Half day $', bind(P, 'half', { type: 'number', inputmode: 'decimal', step: '0.01' })), field('Full day $', bind(P, 'full', { type: 'number', inputmode: 'decimal', step: '0.01' })))
+          : field('Hourly rate $', bind(P, 'rate', { type: 'number', inputmode: 'decimal', step: '0.01' })),
+        h('div', { class: 'muted', style: 'margin-top:6px' }, 'Per tradesperson, ex GST. GST 10% is added on labour.')); };
+    renderP();
     const back = () => { if (ret) { cur = ret; dirty = true; go('edit'); } else go('clients'); };
     header(existing ? 'Edit client' : 'New client', back);
     main.append(h('div', { class: 'card' },
@@ -312,11 +384,12 @@
       field('Attention', bind(c, 'attention', { placeholder: 'Contact person' })),
       field('Address', bind(c, 'address', { textarea: true, placeholder: 'Street\nSuburb QLD 4000' })),
       field('ABN', bind(c, 'abn', { inputmode: 'numeric' })),
-      field('Email (optional)', bind(c, 'email', { type: 'email' }))));
+      h('div', { class: 'row' }, field('Phone', bind(c, 'phone', { type: 'tel' })), field('Email', bind(c, 'email', { type: 'email' })))),
+      h('div', { class: 'card' }, h('h2', null, 'Pricing'), pBox));
     main.append(h('button', { class: 'btn', onclick: () => {
       if (!c.name.trim()) { alert('Enter a business name'); return; }
       const i = clients.findIndex(x => x.id === c.id); if (i >= 0) clients[i] = c; else clients.push(c); saveC(); toast('Client saved');
-      if (ret) { ret.clientId = c.id; ret.client = clone(c); cur = ret; dirty = true; go('edit'); } else go('clients');
+      if (ret) { ret.clientId = c.id; ret.client = clone(c); ret.pricing = pricingFor(c); cur = ret; dirty = true; go('edit'); } else go('clients');
     } }, 'Save client'));
     if (existing && !ret) main.append(h('button', { class: 'btn ghost', style: 'color:#c0302a', onclick: () => { if (confirm('Delete ' + c.name + '? Existing invoices keep their copy.')) { clients = clients.filter(x => x.id !== c.id); saveC(); go('clients'); } } }, 'Delete client'));
   };

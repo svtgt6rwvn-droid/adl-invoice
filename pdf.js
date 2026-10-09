@@ -26,14 +26,27 @@
     if (!s || !f) return null; const [a, b] = s.split(':').map(Number), [c, d] = f.split(':').map(Number);
     let m = (c * 60 + d) - (a * 60 + b); if (m < 0) m += 1440; m -= Number(brk) || 0; return Math.max(0, Math.round(m / 60 * 100) / 100);
   }
+  function pricingOf(inv) {
+    const p = inv.pricing || {};
+    if (p.type === 'day') return { type: 'day', half: Number(p.half) || 0, full: Number(p.full) || 0 };
+    return { type: 'hourly', rate: Number(p.rate != null && p.rate !== '' ? p.rate : inv.rate) || 0 };
+  }
+  const tradesOf = d => { const t = Number(d.trades); return t > 0 ? t : 1; };
   function totals(inv) {
-    const rateC = Math.round((Number(inv.rate) || 0) * 100);
-    const gstPct = inv.gstRate == null ? 10 : Number(inv.gstRate);
-    let hours = 0, labour = 0;
-    const lines = (inv.days || []).map(d => { const h = Number(d.hours) || 0; const amt = Math.round(h * rateC); hours += h; labour += amt; return { h, amt }; });
+    const P = pricingOf(inv);
+    const rateC = Math.round((P.rate || 0) * 100), halfC = Math.round((P.half || 0) * 100), fullC = Math.round((P.full || 0) * 100);
+    const gstPct = inv.gstRate == null || inv.gstRate === '' ? 10 : Number(inv.gstRate);
+    let hours = 0, labour = 0, manHours = 0;
+    const lines = (inv.days || []).map(d => {
+      const h = Number(d.hours) || 0, t = tradesOf(d);
+      let amt, unitC;
+      if (P.type === 'day') { unitC = d.dayType === 'half' ? halfC : fullC; amt = unitC * t; }
+      else { unitC = rateC; amt = Math.round(h * rateC * t); }
+      hours += h; manHours += h * t; labour += amt; return { h, t, amt, unitC };
+    });
     const gst = Math.round(labour * gstPct / 100);
     const exp = (inv.expenses || []).reduce((s, e) => s + Math.round((Number(e.amount) || 0) * 100), 0);
-    return { rateC, gstPct, hours: Math.round(hours * 100) / 100, labour, gst, exp, total: labour + gst + exp, lines };
+    return { P, rateC, halfC, fullC, gstPct, hours: Math.round(hours * 100) / 100, manHours: Math.round(manHours * 100) / 100, labour, gst, exp, total: labour + gst + exp, lines, multi: (inv.days || []).some(d => tradesOf(d) > 1) };
   }
   function labourNote(inv, hasDaySheet) {
     if (inv.labourNote && inv.labourNote.trim()) return inv.labourNote.trim();
@@ -41,6 +54,7 @@
     (inv.days || []).forEach(d => {
       if (d.start && d.finish) { const k = d.start + '-' + d.finish; if (!seen.has(k)) { seen.add(k); parts.push(`${F.t12(d.start)}–${F.t12(d.finish)} is ${F.hrs(d.hours)} hours.`); } }
     });
+    if (pricingOf(inv).type === 'day') return hasDaySheet ? 'Days match the signed day sheet.' : '';
     return [(hasDaySheet ? 'Hours match the signed day sheet.' : ''), ...parts].filter(Boolean).join(' ');
   }
   function attTitle(a, inv) {
@@ -136,14 +150,30 @@
     };
 
     // Labour
-    const rate = F.money(T.rateC);
     const hasSheet = (atts || []).some(a => a.kind === 'daysheet');
     if ((inv.days || []).length) {
-      heading(`Labour — ${rate} per hour + GST`, labourNote(inv, hasSheet));
-      table([{ w: 67.7 }, { w: 175 }, { w: 52, align: 'right' }, { w: 62, align: 'right' }, { w: 46, align: 'right' }, { w: 101.9, align: 'right' }],
-        ['Date', 'Description', 'Hours', 'Rate', 'GST', 'Amount'],
-        inv.days.map((d, i) => [F.dShort(d.date), [d.desc, d.job].filter(Boolean).join('\n'), F.hrs(d.hours), rate, T.gstPct + '%', F.money(T.lines[i].amt)]),
-        ['', 'Labour total', F.hrs(T.hours), '', '', F.money(T.labour)], C.blue);
+      const gstTxt = T.gstPct + '%', descOf = d => [d.desc, d.job].filter(Boolean).join('\n');
+      if (T.P.type === 'day') {
+        heading(`Labour — day rates per tradesperson + GST (half day ${F.money(T.halfC)}, full day ${F.money(T.fullC)})`, labourNote(inv, hasSheet));
+        table([{ w: 62 }, { w: 160 }, { w: 52 }, { w: 44, align: 'right' }, { w: 58, align: 'right' }, { w: 40, align: 'right' }, { w: 89.3, align: 'right' }],
+          ['Date', 'Description', 'Day', 'Trades', 'Rate', 'GST', 'Amount'],
+          inv.days.map((d, i) => [F.dShort(d.date), descOf(d), d.dayType === 'half' ? 'Half day' : 'Full day', String(T.lines[i].t), F.money(T.lines[i].unitC), gstTxt, F.money(T.lines[i].amt)]),
+          ['', `Labour total — ${F.hrs(inv.days.reduce((n, d, i) => n + T.lines[i].t * (d.dayType === 'half' ? 0.5 : 1), 0))} person-days`, '', '', '', '', F.money(T.labour)], C.blue);
+      } else {
+        const rate = F.money(T.rateC);
+        heading(`Labour — ${rate} per hour per tradesperson + GST`, labourNote(inv, hasSheet));
+        if (T.multi) {
+          table([{ w: 62 }, { w: 160 }, { w: 44, align: 'right' }, { w: 44, align: 'right' }, { w: 58, align: 'right' }, { w: 40, align: 'right' }, { w: 97.3, align: 'right' }],
+            ['Date', 'Description', 'Hours', 'Trades', 'Rate', 'GST', 'Amount'],
+            inv.days.map((d, i) => [F.dShort(d.date), descOf(d), F.hrs(d.hours), String(T.lines[i].t), rate, gstTxt, F.money(T.lines[i].amt)]),
+            ['', `Labour total — ${F.hrs(T.manHours)} person-hours`, '', '', '', '', F.money(T.labour)], C.blue);
+        } else {
+          table([{ w: 67.7 }, { w: 175 }, { w: 52, align: 'right' }, { w: 62, align: 'right' }, { w: 46, align: 'right' }, { w: 101.9, align: 'right' }],
+            ['Date', 'Description', 'Hours', 'Rate', 'GST', 'Amount'],
+            inv.days.map((d, i) => [F.dShort(d.date), descOf(d), F.hrs(d.hours), rate, gstTxt, F.money(T.lines[i].amt)]),
+            ['', 'Labour total', F.hrs(T.hours), '', '', F.money(T.labour)], C.blue);
+        }
+      }
       y += 10;
     }
     // Parking / expenses
@@ -228,5 +258,5 @@
     doc.setProperties({ title: `${S.tradingName} ${inv.number} — ${client.name || ''}`, subject: `Tax invoice ${inv.period || F.period(inv.days || [])}${inv.jobSite ? ', ' + inv.jobSite : ''}`, author: S.legalName, creator: 'ADL Invoices' });
     return doc;
   }
-  g.INV = { F, totals, hoursFromTimes, build, attTitle, labourNote };
+  g.INV = { F, totals, hoursFromTimes, build, attTitle, labourNote, pricingOf };
 })(window);
